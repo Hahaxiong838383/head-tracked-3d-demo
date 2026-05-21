@@ -230,26 +230,36 @@ wallGrid.position.z = -649;
 wallGrid.position.y = 50;
 group.add(wallGrid);
 
-// 不同深度的立方体作为视差参照——拉远到 20~55cm，让 motion parallax 幅度更明显
+// SBS 立体感强化：cubes 跨越屏幕平面（z=0）前后分布，
+// 前方"飘出"的 cube 和后方"凹进"的 cube 产生强烈相对视差对比
 const cubes = [];
 const palette = [0x6cf0ff, 0xff6f91, 0xffd166, 0x90ee90, 0xc792ea];
-const SCENE_Y_CENTER = 30;   // 场景重心向上抬 30mm，配合默认俯视视角让画面居中
-for (let i = 0; i < 16; i++) {
-  const size = 30 + Math.random() * 40;          // cube 略放大，远看仍清晰
+const SCENE_Y_CENTER = 30;
+const CUBE_LAYOUT = [
+  // [x, y, z, size_factor] — 手工布局让视差对比最强
+  // 屏幕前方（z>0）"飘出"层
+  [ -80, 20,   80, 1.0],  [  90, -20,  120, 0.9],  [   0, 60,  60, 0.7],
+  // 屏幕平面附近（z≈0）锚定层
+  [-150, 40,  -20, 1.1],  [ 140, 50,  -40, 1.0],  [ -40, -30, -10, 0.9],
+  // 屏幕后方"凹进"层（远~中远）
+  [  60, 80,  -180, 1.2], [-120, -10, -200, 1.0], [ 100, -30, -250, 1.1],
+  [-180, 70,  -320, 1.0], [ 170, 30,  -340, 0.9], [ -60, 100, -380, 1.0],
+  // 远景墙前
+  [ 130, -50, -480, 1.3], [-100, 60,  -520, 1.1], [   0, -40, -560, 1.2],
+];
+for (let i = 0; i < CUBE_LAYOUT.length; i++) {
+  const [x, y, z, sf] = CUBE_LAYOUT[i];
+  const size = 50 * sf;
   const geo = new THREE.BoxGeometry(size, size, size);
   const mat = new THREE.MeshStandardMaterial({
     color: palette[i % palette.length],
-    metalness: 0.1, roughness: 0.55,             // 略粗糙，配合柔和光照
+    metalness: 0.1, roughness: 0.55,
     emissive: palette[i % palette.length], emissiveIntensity: 0.08,
   });
   const m = new THREE.Mesh(geo, mat);
   m.castShadow = true; m.receiveShadow = true;
-  m.position.set(
-    (Math.random() - 0.5) * 380,                  // x: 略放宽
-    SCENE_Y_CENTER + (Math.random() - 0.5) * 150,
-    -200 - Math.random() * 350,                   // z: 屏幕后方 20~55cm（之前是 8~30cm）
-  );
-  m.userData.spin = (Math.random() - 0.5) * 0.004;
+  m.position.set(x, SCENE_Y_CENTER + y, z);
+  m.userData.spin = (Math.random() - 0.5) * 0.003;
   group.add(m);
   cubes.push(m);
 }
@@ -488,7 +498,7 @@ let eye = { ex: 0, ey: 0, ez: 500 };
 // 简化为两个模式：'mono' 单画面（Phase 1 motion parallax）/ 'cross' 斗鸡眼立体
 // 立体强度固定 1.5（实测最强又不过头），expert 模式（?expert=1）可调
 let stereoMode = 'mono';
-let stereoScale = 1.5;
+let stereoScale = 2.5;   // 实测：1.5 视差太弱看不出，2.5 立体感明显且仍可合成
 
 function setStereoMode(m) {
   stereoMode = m;
@@ -620,19 +630,16 @@ window.__demo = {
   },
   setStereoMode(m) { stereoMode = m; },
   setStereoScale(s) { stereoScale = s; },
-  /** Debug: 返回每个 cube 的位置 + bounding 投影信息 */
+  /** Debug: 返回相机状态 */
   inspect() {
     return {
-      cubes: cubes.map(c => ({
-        pos: [c.position.x.toFixed(0), c.position.y.toFixed(0), c.position.z.toFixed(0)],
-        size: c.geometry.parameters.width,
-      })),
-      camera: {
-        pos: [camera.position.x, camera.position.y, camera.position.z],
-        proj: Array.from(camera.projectionMatrix.elements).map(v => v.toFixed(3)),
-      },
-      rendererSize: [renderer.domElement.width, renderer.domElement.height],
-      pixelRatio: renderer.getPixelRatio(),
+      camL: { pos: cameraL.position.toArray().map(v=>v.toFixed(1)) },
+      camR: { pos: cameraR.position.toArray().map(v=>v.toFixed(1)) },
+      camLProj: Array.from(cameraL.projectionMatrix.elements).map(v => v.toFixed(3)),
+      camRProj: Array.from(cameraR.projectionMatrix.elements).map(v => v.toFixed(3)),
+      stereoScale,
+      ipdMm: PHYS.ipdMm,
+      sep: PHYS.ipdMm * stereoScale / 2,
     };
   },
   PHYS,
