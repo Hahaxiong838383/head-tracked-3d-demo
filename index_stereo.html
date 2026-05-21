@@ -9,26 +9,58 @@
   html, body { margin: 0; padding: 0; height: 100%; background: #000; color: #ddd;
                font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; overflow: hidden; }
   #scene { position: fixed; inset: 0; }
-  /* 屏幕正中分隔线，强化"左右两个画面"视觉提示 */
-  #divider { position: fixed; top: 0; bottom: 0; left: 50%; width: 1px; background: rgba(108, 204, 255, 0.25); pointer-events: none; z-index: 50; }
-  /* 左右画面中央对齐点（帮助斗鸡眼对齐两个视角） */
-  .dot { position: fixed; top: 50%; width: 4px; height: 4px; margin-top:-2px; border-radius: 50%; background: rgba(108, 204, 255, 0.6); pointer-events: none; z-index: 51; }
-  #dotL { left: calc(25% - 2px); }
-  #dotR { left: calc(75% - 2px); }
-  #hud { position: fixed; top: 12px; left: 12px; padding: 10px 12px; background: rgba(0,0,0,0.55);
-         border: 1px solid #333; border-radius: 8px; font-size: 12px; line-height: 1.55;
-         backdrop-filter: blur(6px); max-width: 360px; z-index: 100; }
-  #hud b { color: #6cf; }
-  #hud .row { display:flex; justify-content:space-between; gap: 12px; }
-  #hud .row span:first-child { color:#999; }
-  #cam { position: fixed; bottom: 12px; right: 12px; width: 240px; height: 135px;
+
+  /* 极简顶栏 — 只在 mono 模式可见；cross 立体模式自动隐藏避免干扰合成 */
+  #topbar { position: fixed; top: 0; left: 0; right: 0; height: 44px; padding: 0 16px;
+            display: flex; align-items: center; gap: 14px; font-size: 12px;
+            background: rgba(0,0,0,0.5); backdrop-filter: blur(8px);
+            border-bottom: 1px solid rgba(255,255,255,0.06); z-index: 100;
+            transition: opacity 0.2s; }
+  #topbar.stereo-hidden { opacity: 0.12; }   /* cross 模式下淡到几乎隐形 */
+  #topbar:hover { opacity: 1.0; }            /* 鼠标 hover 临时显示 */
+  #topbar .stat { color: #888; }
+  #topbar .stat b { color: #ddd; margin-left: 4px; font-weight: 500; }
+  #topbar .mode-badge { color: #6cf; font-weight: 600; padding: 4px 10px;
+                        background: rgba(108,204,255,0.12); border-radius: 4px; }
+  #topbar button { padding: 6px 14px; background: #6cf; color: #000; border: none;
+                   border-radius: 5px; font-weight: 600; cursor: pointer; font-size: 12px; }
+  #topbar button.ghost { background: transparent; color: #888; border: 1px solid #333; }
+  #topbar .spacer { flex: 1; }
+
+  /* 中央 SBS 分隔线 + 对齐点 — 仅 cross 模式可见 */
+  #divider, .dot { display: none; }
+  body.cross #divider { display: block; position: fixed; top: 0; bottom: 0; left: 50%;
+                        width: 1px; background: rgba(108, 204, 255, 0.18);
+                        pointer-events: none; z-index: 50; }
+  body.cross .dot { display: block; position: fixed; top: 50%; width: 6px; height: 6px;
+                    margin-top: -3px; border-radius: 50%; background: #6cf;
+                    box-shadow: 0 0 8px rgba(108,204,255,0.7);
+                    pointer-events: none; z-index: 51; }
+  body.cross #dotL { left: calc(25% - 3px); }
+  body.cross #dotR { left: calc(75% - 3px); }
+
+  /* 摄像头小窗 — cross 模式下移到正下方居中，避免影响立体合成 */
+  #cam { position: fixed; bottom: 12px; right: 12px; width: 180px; height: 100px;
          border: 1px solid #333; border-radius: 6px; background:#111;
-         transform: scaleX(-1); /* mirror so user sees natural view */ }
+         transform: scaleX(-1); z-index: 90; opacity: 0.5; transition: opacity 0.2s; }
+  #cam:hover { opacity: 1.0; }
+
   #startBtn { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
               padding: 14px 28px; font-size: 16px; background: #6cf; color:#000;
-              border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+              border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
+              z-index: 200; }
   #startBtn:disabled { opacity: 0.5; cursor: progress; }
-  #err { position: fixed; bottom: 12px; left: 12px; color: #f66; font-size: 12px; max-width: 50%; }
+  #err { position: fixed; bottom: 12px; left: 12px; color: #f66; font-size: 12px; max-width: 50%; z-index: 300; }
+
+  /* expert 模式才显示的详细标定面板 */
+  #expertPanel { position: fixed; top: 56px; left: 12px; padding: 10px 12px;
+                 background: rgba(0,0,0,0.6); border: 1px solid #333; border-radius: 8px;
+                 font-size: 11px; line-height: 1.5; backdrop-filter: blur(6px);
+                 max-width: 280px; z-index: 99; display: none; }
+  body.expert #expertPanel { display: block; }
+  #expertPanel .row { display: flex; justify-content: space-between; gap: 12px; }
+  #expertPanel .row span:first-child { color: #888; }
+  #expertPanel code { background: #222; padding: 1px 5px; border-radius: 3px; color: #6cf; }
 </style>
 </head>
 <body>
@@ -37,36 +69,36 @@
 <div id="dotL" class="dot"></div>
 <div id="dotR" class="dot"></div>
 <video id="cam" autoplay playsinline muted></video>
-<div id="hud" hidden>
-  <div><b>Stereo 3D · Phase 2 (SBS)</b></div>
-  <div class="row"><span>FPS</span><span id="fps">—</span></div>
-  <div class="row"><span>Head (x,y,z) cm</span><span id="head">—</span></div>
-  <div class="row"><span>Est. distance</span><span id="dist">—</span></div>
-  <div class="row"><span>IPD px</span><span id="ipd">—</span></div>
-  <div class="row"><span>Face detected</span><span id="face">—</span></div>
-  <hr style="border:0;border-top:1px solid #222;margin:8px 0" />
-  <div class="row"><span>FoV (°)</span><span id="vFov">—</span></div>
-  <div class="row"><span>IPD (mm)</span><span id="vIpd">—</span></div>
-  <div class="row"><span>Cam Y offset (mm)</span><span id="vCamY">—</span></div>
-  <div class="row"><span>零位偏置 (x, y)</span><span id="vOffset">—</span></div>
-  <hr style="border:0;border-top:1px solid #222;margin:8px 0" />
-  <div class="row"><span>Stereo 模式</span><span id="vMode" style="color:#6cf">—</span></div>
-  <div class="row"><span>立体强度 ×</span><span id="vScale">—</span></div>
-  <button id="recenterBtn" style="margin-top:8px;width:100%;padding:8px;background:#6cf;color:#000;border:none;border-radius:4px;font-weight:600;cursor:pointer">📍 把当前头位设为零位（空格）</button>
-  <div style="margin-top:8px;color:#888;font-size:11px">
-    <b>👀 自由立体观看技巧：</b><br/>
-    1. 屏幕左右两半各画一只眼的视角<br/>
-    2. 屏幕中央两个蓝点是对齐参考<br/>
-    3. <b style="color:#6cf">斗鸡眼</b>：盯两点中间慢慢"对眼"，让左右两点重叠为 3 个点（中间那个就是合成的 3D 画面）<br/>
-    4. 平行眼：把目光"放远"看屏幕后面，类似看 Magic Eye<br/>
-    <b style="color:#6cf">不行就按 S 切到 mono 退化为 Phase 1 单画面</b><br/>
-    <hr style="border:0;border-top:1px solid #222;margin:8px 0" />
-    <b>快捷键：</b><br/>
-    <code>S</code> Stereo 模式 cross/parallel/mono 循环<br/>
-    <code>,</code>/<code>.</code> 立体强度 ±0.1（0 = 平面 / 1 = 真实 IPD / 2 = 夸张）<br/>
-    <code>Space</code> 零位校准（最重要）<br/>
-    <code>[</code>/<code>]</code> FoV ±1° · <code>-</code>/<code>=</code> IPD ±1mm · <code>;</code>/<code>'</code> Cam Y ±5mm<br/>
-    <code>R</code> 重置所有
+
+<!-- 极简顶栏：模式徽章 + 一个切换按钮 + 零位 + 关键状态 -->
+<div id="topbar" hidden>
+  <span class="mode-badge" id="vMode">单画面</span>
+  <button id="modeBtn">切到斗鸡眼立体</button>
+  <button id="recenterBtn" class="ghost">📍 零位（空格）</button>
+  <div class="spacer"></div>
+  <span class="stat">距离 <b id="dist">—</b></span>
+  <span class="stat">FPS <b id="fps">—</b></span>
+  <span class="stat" id="faceStat">脸 <b id="face">—</b></span>
+</div>
+
+<!-- 隐藏的详细字段，给 JS 用但不显示给普通用户 -->
+<div style="display:none">
+  <span id="head"></span><span id="ipd"></span>
+  <span id="vFov"></span><span id="vIpd"></span><span id="vCamY"></span><span id="vOffset"></span><span id="vScale"></span>
+</div>
+
+<!-- expert 模式（?expert=1）才显示的详细标定面板 -->
+<div id="expertPanel">
+  <div style="font-weight:600;color:#6cf;margin-bottom:6px">Expert 标定</div>
+  <div class="row"><span>FoV (°)</span><span id="vFov2">—</span></div>
+  <div class="row"><span>IPD (mm)</span><span id="vIpd2">—</span></div>
+  <div class="row"><span>Cam Y (mm)</span><span id="vCamY2">—</span></div>
+  <div class="row"><span>零位 (x, y)</span><span id="vOffset2">—</span></div>
+  <div class="row"><span>Stereo scale</span><span id="vScale2">—</span></div>
+  <div style="margin-top:6px;color:#666">
+    <code>S</code> 模式切换 · <code>Space</code> 零位<br/>
+    <code>,</code>/<code>.</code> 立体强度 · <code>[</code>/<code>]</code> FoV<br/>
+    <code>-</code>/<code>=</code> IPD · <code>;</code>/<code>'</code> Cam Y · <code>R</code> 重置
   </div>
 </div>
 <button id="startBtn">点击开始（授权摄像头）</button>
@@ -392,12 +424,16 @@ const hud = {
   vScale: document.getElementById('vScale'),
 };
 function refreshCalibHud() {
-  hud.vFov.textContent = PHYS.camHFovDeg.toFixed(0);
-  hud.vIpd.textContent = PHYS.ipdMm.toFixed(0);
-  hud.vCamY.textContent = PHYS.camOffsetYmm.toFixed(0);
-  hud.vOffset.textContent = `${eyeOffset.ex.toFixed(0)}, ${eyeOffset.ey.toFixed(0)}`;
-  hud.vMode.textContent = stereoMode;
-  hud.vScale.textContent = stereoScale.toFixed(1);
+  const fov = PHYS.camHFovDeg.toFixed(0);
+  const ipd = PHYS.ipdMm.toFixed(0);
+  const camY = PHYS.camOffsetYmm.toFixed(0);
+  const off = `${eyeOffset.ex.toFixed(0)}, ${eyeOffset.ey.toFixed(0)}`;
+  const sc = stereoScale.toFixed(1);
+  // expert panel
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('vFov2', fov); set('vIpd2', ipd); set('vCamY2', camY); set('vOffset2', off); set('vScale2', sc);
+  // 隐藏的兼容 fields（cc 调试用）
+  set('vFov', fov); set('vIpd', ipd); set('vCamY', camY); set('vOffset', off); set('vScale', sc);
 }
 
 // ===== 键盘标定 =====
@@ -410,12 +446,11 @@ window.addEventListener('keydown', e => {
     case '=': PHYS.ipdMm = Math.min(80, PHYS.ipdMm + 1); break;
     case ';': PHYS.camOffsetYmm -= 5; break;
     case "'": PHYS.camOffsetYmm += 5; break;
-    case 'r': case 'R': Object.assign(PHYS, PHYS_DEFAULT); eyeOffset.ex = 0; eyeOffset.ey = 0; stereoMode = 'cross'; stereoScale = 1.0; break;
+    case 'r': case 'R': Object.assign(PHYS, PHYS_DEFAULT); eyeOffset.ex = 0; eyeOffset.ey = 0; setStereoMode('mono'); stereoScale = 1.5; break;
     case ' ': recenter(); e.preventDefault(); break;
-    // Stereo 控制
-    case 's': case 'S':
-      stereoMode = stereoMode === 'cross' ? 'parallel' : (stereoMode === 'parallel' ? 'mono' : 'cross');
-      break;
+    // Stereo 模式切换（mono ↔ cross）
+    case 's': case 'S': setStereoMode(stereoMode === 'cross' ? 'mono' : 'cross'); break;
+    // 立体强度（expert 用，普通用户不需要）
     case ',': stereoScale = Math.max(0.0, stereoScale - 0.1); break;
     case '.': stereoScale = Math.min(3.0, stereoScale + 0.1); break;
     default: return;
@@ -439,6 +474,15 @@ function recenter() {
 }
 // 按钮 click 直接绑（DOM 已就绪，type=module 默认 defer）
 document.getElementById('recenterBtn')?.addEventListener('click', recenter);
+document.getElementById('modeBtn')?.addEventListener('click', () => {
+  setStereoMode(stereoMode === 'cross' ? 'mono' : 'cross');
+});
+
+// expert 模式 URL 参数：?expert=1 显示详细标定面板
+if (new URLSearchParams(location.search).get('expert') === '1') {
+  document.body.classList.add('expert');
+}
+
 
 // ===== 丢失保护 =====
 let lostFrames = 0;
@@ -450,10 +494,20 @@ const IPD_JUMP_RATIO = 0.5;
 let eye = { ex: 0, ey: 0, ez: 500 };
 
 // ===== Stereo 渲染参数 =====
-// 模式：'cross' 斗鸡眼（左眼看右半屏）/ 'parallel' 平行眼（左眼看左半屏）/ 'mono' 单画面（关闭立体）
-let stereoMode = 'cross';
-// 立体强度：1.0 = 真实 IPD；越小立体感越弱，越大越夸张（推荐 0.5~2.0）
-let stereoScale = 1.0;
+// 简化为两个模式：'mono' 单画面（Phase 1 motion parallax）/ 'cross' 斗鸡眼立体
+// 立体强度固定 1.5（实测最强又不过头），expert 模式（?expert=1）可调
+let stereoMode = 'mono';
+let stereoScale = 1.5;
+
+function setStereoMode(m) {
+  stereoMode = m;
+  document.body.classList.toggle('cross', m === 'cross');
+  const btn = document.getElementById('modeBtn');
+  const badge = document.getElementById('vMode');
+  if (btn) btn.textContent = m === 'cross' ? '切回单画面' : '切到斗鸡眼立体';
+  if (badge) badge.textContent = m === 'cross' ? '斗鸡眼立体' : '单画面';
+  refreshCalibHud();
+}
 
 function renderStereo() {
   const W = renderer.domElement.width / renderer.getPixelRatio();
@@ -574,7 +628,7 @@ window.__demo = {
   recenter,
   startNoCam() {
     document.getElementById('startBtn')?.remove();
-    document.getElementById('hud').hidden = false;
+    document.getElementById('topbar').hidden = false;
     refreshCalibHud();
     loop();
   },
@@ -617,7 +671,7 @@ startBtn.addEventListener('click', async () => {
     await initCamera();
     await initLandmarker();
     startBtn.remove();
-    document.getElementById('hud').hidden = false;
+    document.getElementById('topbar').hidden = false;
     refreshCalibHud();
     loop();
   } catch (e) {
