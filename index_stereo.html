@@ -254,25 +254,19 @@ for (let i = 0; i < 16; i++) {
   cubes.push(m);
 }
 
-// "窗框"——两个，一个左屏幕半边、一个右屏幕半边（自由立体的视觉锚）
+// "窗框"——完整屏幕矩形（两个相机看的同一 stage）
 const frameMat = new THREE.LineBasicMaterial({ color: 0x6cf });
 const w = PHYS.screenWmm / 2, h = PHYS.screenHmm / 2;   // 屏幕半宽/半高
-const hw = w / 2;                                        // 半屏幕半宽（即屏幕全宽的 1/4）
-
-function makeRectFrame(xMin, xMax, yMin, yMax) {
-  return new THREE.LineLoop(
-    new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(xMin, yMin, 0),
-      new THREE.Vector3(xMax, yMin, 0),
-      new THREE.Vector3(xMax, yMax, 0),
-      new THREE.Vector3(xMin, yMax, 0),
-    ]),
-    frameMat,
-  );
-}
-// 左屏幕半边 (-w, -h)..(0, h)；右屏幕半边 (0, -h)..(w, h)
-scene.add(makeRectFrame(-w, 0, -h, h));
-scene.add(makeRectFrame(0, w, -h, h));
+const frame = new THREE.LineLoop(
+  new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-w, -h, 0),
+    new THREE.Vector3( w, -h, 0),
+    new THREE.Vector3( w,  h, 0),
+    new THREE.Vector3(-w,  h, 0),
+  ]),
+  frameMat,
+);
+scene.add(frame);
 
 // ===== 双目相机：左右眼各一个，独立 off-axis frustum =====
 // Gemini 评审 P0：必须关 projectionMatrixAutoUpdate，否则 Three.js 每帧用 fov/aspect 覆盖
@@ -287,20 +281,17 @@ const cameraR = makeCam();   // 右眼物理位置
 scene.add(cameraL);
 scene.add(cameraR);
 
-/** Off-axis frustum 对着"半屏幕矩形"
- *  side='left'  → 屏幕左半 (-w,-h)..(0,h)
- *  side='right' → 屏幕右半 (0,-h)..(w,h)
- *  eye 是相机物理位置（mm，屏幕系）。
- *  每只眼睛只"看"屏幕对应一半，配合 setViewport 实现真双目视差。
+/** Off-axis frustum 对着"完整屏幕矩形" (-w,-h)..(w,h)
+ *  Half-SBS 标准范式：两个相机都看同一个 stage，间距 = IPD，
+ *  各自 viewport 显示该相机视野的完整场景（横向压扁 50%，但两个画面是
+ *  同一场景的不同视角，视差即立体感来源）。
  */
-function setOffAxisHalfScreen(camera, eye, side, near, far) {
-  const xMin = (side === 'left') ? -w : 0;
-  const xMax = (side === 'left') ?  0 : w;
+function setOffAxisStage(camera, eye, near, far) {
   const n = near;
-  const left   = (xMin - eye.ex) * n / eye.ez;
-  const right  = (xMax - eye.ex) * n / eye.ez;
-  const bottom = (-h    - eye.ey) * n / eye.ez;
-  const top    = ( h    - eye.ey) * n / eye.ez;
+  const left   = (-w - eye.ex) * n / eye.ez;
+  const right  = ( w - eye.ex) * n / eye.ez;
+  const bottom = (-h - eye.ey) * n / eye.ez;
+  const top    = ( h - eye.ey) * n / eye.ez;
   camera.projectionMatrix.makePerspective(left, right, top, bottom, n, far);
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   camera.position.set(eye.ex, eye.ey, eye.ez);
@@ -518,16 +509,13 @@ function renderStereo() {
   const leftEye  = { ex: eye.ex - sep, ey: eye.ey, ez: eye.ez };
   const rightEye = { ex: eye.ex + sep, ey: eye.ey, ez: eye.ez };
 
-  // 各自的 off-axis frustum 对着对应"半屏幕"矩形
-  setOffAxisHalfScreen(cameraL, leftEye,  'left',  50, 3000);
-  setOffAxisHalfScreen(cameraR, rightEye, 'right', 50, 3000);
-
   renderer.autoClear = false;
   renderer.clear();
   renderer.setScissorTest(true);
 
   if (stereoMode === 'mono') {
-    setOffAxisFullScreen(cameraL, eye, 50, 3000);
+    // 单画面：单相机看整屏，铺满 canvas
+    setOffAxisStage(cameraL, eye, 50, 3000);
     renderer.setViewport(0, 0, W, H);
     renderer.setScissor(0, 0, W, H);
     renderer.render(scene, cameraL);
@@ -535,31 +523,23 @@ function renderStereo() {
     return;
   }
 
-  // 屏幕左半 viewport
+  // SBS cross-eyed：两个相机都看完整 stage，只是位置 IPD 间距 → 视角略不同（即视差）
+  setOffAxisStage(cameraL, leftEye,  50, 3000);
+  setOffAxisStage(cameraR, rightEye, 50, 3000);
+
+  // 屏幕左半 viewport（cross-eyed: 给右眼看 → cameraR 的视图）
   const leftViewportCam  = (stereoMode === 'cross') ? cameraR : cameraL;
   renderer.setViewport(0, 0, halfW, H);
   renderer.setScissor(0, 0, halfW, H);
   renderer.render(scene, leftViewportCam);
 
-  // 屏幕右半 viewport
+  // 屏幕右半 viewport（cross-eyed: 给左眼看 → cameraL 的视图）
   const rightViewportCam = (stereoMode === 'cross') ? cameraL : cameraR;
   renderer.setViewport(halfW, 0, halfW, H);
   renderer.setScissor(halfW, 0, halfW, H);
   renderer.render(scene, rightViewportCam);
 
   renderer.setScissorTest(false);
-}
-
-// mono fallback 用：单相机看整屏
-function setOffAxisFullScreen(camera, eye, near, far) {
-  const n = near;
-  const left   = (-w - eye.ex) * n / eye.ez;
-  const right  = ( w - eye.ex) * n / eye.ez;
-  const bottom = (-h - eye.ey) * n / eye.ez;
-  const top    = ( h - eye.ey) * n / eye.ez;
-  camera.projectionMatrix.makePerspective(left, right, top, bottom, n, far);
-  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-  camera.position.set(eye.ex, eye.ey, eye.ez);
 }
 
 function loop() {
