@@ -27,17 +27,15 @@
   #topbar button.ghost { background: transparent; color: #888; border: 1px solid #333; }
   #topbar .spacer { flex: 1; }
 
-  /* 中央 SBS 分隔线 + 对齐点 — 仅 cross 模式可见 */
+  /* Anaglyph 模式不需要分隔线 / 对齐点 */
   #divider, .dot { display: none; }
-  body.cross #divider { display: block; position: fixed; top: 0; bottom: 0; left: 50%;
-                        width: 1px; background: rgba(108, 204, 255, 0.18);
-                        pointer-events: none; z-index: 50; }
-  body.cross .dot { display: block; position: fixed; top: 50%; width: 6px; height: 6px;
-                    margin-top: -3px; border-radius: 50%; background: #6cf;
-                    box-shadow: 0 0 8px rgba(108,204,255,0.7);
-                    pointer-events: none; z-index: 51; }
-  body.cross #dotL { left: calc(25% - 3px); }
-  body.cross #dotR { left: calc(75% - 3px); }
+
+  /* anaglyph 模式：左上角小贴士提示戴红蓝眼镜 */
+  #glassesTip { display: none; position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+                padding: 10px 20px; background: rgba(0,0,0,0.7); color: #ffcc66;
+                border: 1px solid #553; border-radius: 6px; font-size: 13px;
+                backdrop-filter: blur(6px); z-index: 80; pointer-events: none; }
+  body.anaglyph #glassesTip { display: block; }
 
   /* 摄像头小窗 — cross 模式下移到正下方居中，避免影响立体合成 */
   #cam { position: fixed; bottom: 12px; right: 12px; width: 180px; height: 100px;
@@ -65,9 +63,7 @@
 </head>
 <body>
 <canvas id="scene"></canvas>
-<div id="divider"></div>
-<div id="dotL" class="dot"></div>
-<div id="dotR" class="dot"></div>
+<div id="glassesTip">🕶️ 戴上红蓝 3D 眼镜（左红右蓝/青）观看，立体感最强</div>
 <video id="cam" autoplay playsinline muted></video>
 
 <!-- 极简顶栏：模式徽章 + 一个切换按钮 + 零位 + 关键状态 -->
@@ -447,10 +443,10 @@ window.addEventListener('keydown', e => {
     case '=': PHYS.ipdMm = Math.min(80, PHYS.ipdMm + 1); break;
     case ';': PHYS.camOffsetYmm -= 5; break;
     case "'": PHYS.camOffsetYmm += 5; break;
-    case 'r': case 'R': Object.assign(PHYS, PHYS_DEFAULT); eyeOffset.ex = 0; eyeOffset.ey = 0; setStereoMode('mono'); stereoScale = 1.5; break;
+    case 'r': case 'R': Object.assign(PHYS, PHYS_DEFAULT); eyeOffset.ex = 0; eyeOffset.ey = 0; setStereoMode('mono'); stereoScale = 1.0; break;
     case ' ': recenter(); e.preventDefault(); break;
-    // Stereo 模式切换（mono ↔ cross）
-    case 's': case 'S': setStereoMode(stereoMode === 'cross' ? 'mono' : 'cross'); break;
+    // Stereo 模式切换（mono ↔ anaglyph）
+    case 's': case 'S': setStereoMode(stereoMode === 'anaglyph' ? 'mono' : 'anaglyph'); break;
     // 立体强度（expert 用，普通用户不需要）
     case ',': stereoScale = Math.max(0.0, stereoScale - 0.1); break;
     case '.': stereoScale = Math.min(3.0, stereoScale + 0.1); break;
@@ -476,7 +472,7 @@ function recenter() {
 // 按钮 click 直接绑（DOM 已就绪，type=module 默认 defer）
 document.getElementById('recenterBtn')?.addEventListener('click', recenter);
 document.getElementById('modeBtn')?.addEventListener('click', () => {
-  setStereoMode(stereoMode === 'cross' ? 'mono' : 'cross');
+  setStereoMode(stereoMode === 'anaglyph' ? 'mono' : 'anaglyph');
 });
 
 // expert 模式 URL 参数：?expert=1 显示详细标定面板
@@ -495,61 +491,65 @@ const IPD_JUMP_RATIO = 0.5;
 let eye = { ex: 0, ey: 0, ez: 500 };
 
 // ===== Stereo 渲染参数 =====
-// 简化为两个模式：'mono' 单画面（Phase 1 motion parallax）/ 'cross' 斗鸡眼立体
-// 立体强度固定 1.5（实测最强又不过头），expert 模式（?expert=1）可调
+// 两种模式：'mono' 单画面（无眼镜）/ 'anaglyph' 红蓝立体（戴红蓝 3D 眼镜）
+// MacBook 满屏 SBS + 平行眼物理做不到（屏幕宽 300mm 要求眼睛外散 17° 超过生理极限），
+// 所以唯一可行的"满屏 + 零训练"立体是 anaglyph：左视图渲染 R 通道，右视图渲染 GB 通道。
 let stereoMode = 'mono';
-let stereoScale = 2.5;   // 实测：1.5 视差太弱看不出，2.5 立体感明显且仍可合成
+let stereoScale = 1.0;   // anaglyph 模式真实 IPD 视差就够强（眼镜物理分光）
 
 function setStereoMode(m) {
   stereoMode = m;
-  document.body.classList.toggle('cross', m === 'cross');
+  document.body.classList.toggle('anaglyph', m === 'anaglyph');
   const btn = document.getElementById('modeBtn');
   const badge = document.getElementById('vMode');
-  if (btn) btn.textContent = m === 'cross' ? '切回单画面' : '切到斗鸡眼立体';
-  if (badge) badge.textContent = m === 'cross' ? '斗鸡眼立体' : '单画面';
+  if (btn) btn.textContent = m === 'anaglyph' ? '切回单画面' : '切到红蓝立体（戴眼镜）';
+  if (badge) badge.textContent = m === 'anaglyph' ? '红蓝立体' : '单画面';
   refreshCalibHud();
 }
 
 function renderStereo() {
   const W = renderer.domElement.width / renderer.getPixelRatio();
   const H = renderer.domElement.height / renderer.getPixelRatio();
-  const halfW = W / 2;
-
-  const sep = (PHYS.ipdMm * stereoScale) / 2;
-  const leftEye  = { ex: eye.ex - sep, ey: eye.ey, ez: eye.ez };
-  const rightEye = { ex: eye.ex + sep, ey: eye.ey, ez: eye.ez };
-
-  renderer.autoClear = false;
-  renderer.clear();
-  renderer.setScissorTest(true);
+  const gl = renderer.getContext();
 
   if (stereoMode === 'mono') {
     // 单画面：单相机看整屏，铺满 canvas
     setOffAxisStage(cameraL, eye, 50, 3000);
     renderer.setViewport(0, 0, W, H);
-    renderer.setScissor(0, 0, W, H);
-    renderer.render(scene, cameraL);
     renderer.setScissorTest(false);
+    renderer.autoClear = true;
+    gl.colorMask(true, true, true, true);
+    renderer.render(scene, cameraL);
     return;
   }
 
-  // SBS cross-eyed：两个相机都看完整 stage，只是位置 IPD 间距 → 视角略不同（即视差）
+  // === Anaglyph 红蓝立体 ===
+  // 几何：两个相机间距 = IPD * stereoScale，都看完整 stage
+  const sep = (PHYS.ipdMm * stereoScale) / 2;
+  const leftEye  = { ex: eye.ex - sep, ey: eye.ey, ez: eye.ez };
+  const rightEye = { ex: eye.ex + sep, ey: eye.ey, ez: eye.ez };
   setOffAxisStage(cameraL, leftEye,  50, 3000);
   setOffAxisStage(cameraR, rightEye, 50, 3000);
 
-  // 屏幕左半 viewport（cross-eyed: 给右眼看 → cameraR 的视图）
-  const leftViewportCam  = (stereoMode === 'cross') ? cameraR : cameraL;
-  renderer.setViewport(0, 0, halfW, H);
-  renderer.setScissor(0, 0, halfW, H);
-  renderer.render(scene, leftViewportCam);
-
-  // 屏幕右半 viewport（cross-eyed: 给左眼看 → cameraL 的视图）
-  const rightViewportCam = (stereoMode === 'cross') ? cameraL : cameraR;
-  renderer.setViewport(halfW, 0, halfW, H);
-  renderer.setScissor(halfW, 0, halfW, H);
-  renderer.render(scene, rightViewportCam);
-
+  renderer.setViewport(0, 0, W, H);
   renderer.setScissorTest(false);
+  renderer.autoClear = false;
+
+  // 1) 清整屏（黑底）
+  gl.colorMask(true, true, true, true);
+  renderer.setClearColor(0x000000, 1);
+  renderer.clear();
+
+  // 2) 左眼视图 → 只写 R 通道（红镜片看到的）
+  gl.colorMask(true, false, false, true);
+  renderer.render(scene, cameraL);
+
+  // 3) 右眼视图 → 只写 GB 通道（青/蓝镜片看到的）
+  gl.colorMask(false, true, true, true);
+  renderer.render(scene, cameraR);
+
+  // 4) 恢复 colorMask，否则下一帧不能正确清 canvas
+  gl.colorMask(true, true, true, true);
 }
 
 function loop() {
