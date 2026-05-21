@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Stereo 3D Demo (Phase 2 · SBS 自由立体)</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; color: #ddd;
+               font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; overflow: hidden; }
+  #scene { position: fixed; inset: 0; }
+  /* 屏幕正中分隔线，强化"左右两个画面"视觉提示 */
+  #divider { position: fixed; top: 0; bottom: 0; left: 50%; width: 1px; background: rgba(108, 204, 255, 0.25); pointer-events: none; z-index: 50; }
+  /* 左右画面中央对齐点（帮助斗鸡眼对齐两个视角） */
+  .dot { position: fixed; top: 50%; width: 4px; height: 4px; margin-top:-2px; border-radius: 50%; background: rgba(108, 204, 255, 0.6); pointer-events: none; z-index: 51; }
+  #dotL { left: calc(25% - 2px); }
+  #dotR { left: calc(75% - 2px); }
+  #hud { position: fixed; top: 12px; left: 12px; padding: 10px 12px; background: rgba(0,0,0,0.55);
+         border: 1px solid #333; border-radius: 8px; font-size: 12px; line-height: 1.55;
+         backdrop-filter: blur(6px); max-width: 360px; z-index: 100; }
+  #hud b { color: #6cf; }
+  #hud .row { display:flex; justify-content:space-between; gap: 12px; }
+  #hud .row span:first-child { color:#999; }
+  #cam { position: fixed; bottom: 12px; right: 12px; width: 240px; height: 135px;
+         border: 1px solid #333; border-radius: 6px; background:#111;
+         transform: scaleX(-1); /* mirror so user sees natural view */ }
+  #startBtn { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+              padding: 14px 28px; font-size: 16px; background: #6cf; color:#000;
+              border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+  #startBtn:disabled { opacity: 0.5; cursor: progress; }
+  #err { position: fixed; bottom: 12px; left: 12px; color: #f66; font-size: 12px; max-width: 50%; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="divider"></div>
+<div id="dotL" class="dot"></div>
+<div id="dotR" class="dot"></div>
+<video id="cam" autoplay playsinline muted></video>
+<div id="hud" hidden>
+  <div><b>Stereo 3D · Phase 2 (SBS)</b></div>
+  <div class="row"><span>FPS</span><span id="fps">—</span></div>
+  <div class="row"><span>Head (x,y,z) cm</span><span id="head">—</span></div>
+  <div class="row"><span>Est. distance</span><span id="dist">—</span></div>
+  <div class="row"><span>IPD px</span><span id="ipd">—</span></div>
+  <div class="row"><span>Face detected</span><span id="face">—</span></div>
+  <hr style="border:0;border-top:1px solid #222;margin:8px 0" />
+  <div class="row"><span>FoV (°)</span><span id="vFov">—</span></div>
+  <div class="row"><span>IPD (mm)</span><span id="vIpd">—</span></div>
+  <div class="row"><span>Cam Y offset (mm)</span><span id="vCamY">—</span></div>
+  <div class="row"><span>零位偏置 (x, y)</span><span id="vOffset">—</span></div>
+  <hr style="border:0;border-top:1px solid #222;margin:8px 0" />
+  <div class="row"><span>Stereo 模式</span><span id="vMode" style="color:#6cf">—</span></div>
+  <div class="row"><span>立体强度 ×</span><span id="vScale">—</span></div>
+  <button id="recenterBtn" style="margin-top:8px;width:100%;padding:8px;background:#6cf;color:#000;border:none;border-radius:4px;font-weight:600;cursor:pointer">📍 把当前头位设为零位（空格）</button>
+  <div style="margin-top:8px;color:#888;font-size:11px">
+    <b>👀 自由立体观看技巧：</b><br/>
+    1. 屏幕左右两半各画一只眼的视角<br/>
+    2. 屏幕中央两个蓝点是对齐参考<br/>
+    3. <b style="color:#6cf">斗鸡眼</b>：盯两点中间慢慢"对眼"，让左右两点重叠为 3 个点（中间那个就是合成的 3D 画面）<br/>
+    4. 平行眼：把目光"放远"看屏幕后面，类似看 Magic Eye<br/>
+    <b style="color:#6cf">不行就按 S 切到 mono 退化为 Phase 1 单画面</b><br/>
+    <hr style="border:0;border-top:1px solid #222;margin:8px 0" />
+    <b>快捷键：</b><br/>
+    <code>S</code> Stereo 模式 cross/parallel/mono 循环<br/>
+    <code>,</code>/<code>.</code> 立体强度 ±0.1（0 = 平面 / 1 = 真实 IPD / 2 = 夸张）<br/>
+    <code>Space</code> 零位校准（最重要）<br/>
+    <code>[</code>/<code>]</code> FoV ±1° · <code>-</code>/<code>=</code> IPD ±1mm · <code>;</code>/<code>'</code> Cam Y ±5mm<br/>
+    <code>R</code> 重置所有
+  </div>
+</div>
+<button id="startBtn">点击开始（授权摄像头）</button>
+<div id="err"></div>
+
+<script>
+// ====== 在 module 加载前先装好全局错误兜底（不依赖 module 是否成功）======
+(function () {
+  const errEl = document.getElementById('err');
+  function show(msg) {
+    if (errEl) {
+      errEl.style.cssText = 'position:fixed;bottom:12px;left:12px;right:12px;max-width:none;padding:12px;background:#411;border:1px solid #f66;border-radius:6px;color:#f99;font-size:13px;font-family:monospace;white-space:pre-wrap;z-index:9999';
+      errEl.textContent = (errEl.textContent ? errEl.textContent + '\n' : '') + msg;
+    } else {
+      // err div 还没渲染：写到 body 末尾
+      const d = document.createElement('pre');
+      d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;padding:8px;background:#411;color:#f99;font:12px monospace;z-index:9999';
+      d.textContent = msg;
+      document.body && document.body.appendChild(d);
+    }
+  }
+  window.addEventListener('error', e => show('[ERROR] ' + e.message + '\n  at ' + (e.filename||'?') + ':' + (e.lineno||'?')));
+  window.addEventListener('unhandledrejection', e => show('[PROMISE] ' + (e.reason && (e.reason.stack || e.reason.message || String(e.reason)))));
+  // Safari 版本检测
+  const ua = navigator.userAgent;
+  const isSafari = /Safari\//.test(ua) && !/Chrome\/|Chromium\//.test(ua);
+  const m = ua.match(/Version\/(\d+\.\d+)/);
+  if (isSafari && m) {
+    const v = parseFloat(m[1]);
+    if (v < 16.4) show('Safari ' + v + ' 对 ES module 兼容可能不全；建议用 Chrome 打开 http://localhost:8765');
+  }
+})();
+</script>
+
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+import { FilesetResolver, FaceLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+
+// ===== 物理常量（MacBook 13~14 寸假设；首次粗略，后面提供标定面板可调）=====
+const PHYS = {
+  ipdMm: 63,                   // 人群均值瞳距
+  screenWmm: 300,              // 屏幕物理宽 ~30cm (13"~14")
+  screenHmm: 190,              // 屏幕物理高
+  // camOffsetYmm 含义：摄像头视野中央对应的"用户眼睛在屏幕系的 Y 高度"。
+  // 摄像头机械位置确实在屏幕中心上方 ~105mm，但用户实际坐姿眼睛通常在
+  // 屏幕中央到中下，所以脸出现在摄像头视野中央时，"眼睛-屏幕中心"垂直差远小于 105。
+  // 经验值 ~50mm 更贴近 MacBook 实际使用姿态（可用 ; ' 微调）
+  camOffsetXmm: 0,
+  camOffsetYmm: 50,
+  // MacBook 摄像头水平 FoV 大约 55°（年代不一，可标定）
+  camHFovDeg: 55,
+};
+
+// ===== Three.js 场景 =====
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;     // 软阴影（PCF 多采样滤波）
+renderer.toneMapping = THREE.ACESFilmicToneMapping;   // 让多光照叠加不爆白
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0e16);
+// 雾配合拉远的 cubes：远端 2.5m，避免后墙完全雾化但保留深度暗示
+scene.fog = new THREE.Fog(0x0a0e16, 700, 2500);
+
+// ===== 灯光：环境基底 + 半球 + 三向包围（key/fill/rim），主光投柔和阴影 =====
+// 环境光降一点，让阴影对比明显；总照度由后面 4 盏方向光补足
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const hemi = new THREE.HemisphereLight(0xc6d4ff, 0x4a3a30, 0.7);
+scene.add(hemi);
+
+// Key light：从右上前方打来，承担主要照明 + 投阴影
+const key = new THREE.DirectionalLight(0xfff5e6, 1.5);
+key.position.set(180, 320, 280);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);              // 高分辨率 shadow map
+key.shadow.radius = 6;                            // PCF 模糊半径，越大越柔
+key.shadow.bias = -0.0005;                        // 防 shadow acne
+key.shadow.normalBias = 1.0;
+// 配置 shadow camera 覆盖整个 floor + cubes 区域
+const sc = key.shadow.camera;
+sc.left = -450; sc.right = 450;
+sc.top = 450; sc.bottom = -450;
+sc.near = 50; sc.far = 1200;
+sc.updateProjectionMatrix();
+scene.add(key);
+
+// Fill light：从左前方补暖色，软化阴影
+const fill = new THREE.DirectionalLight(0xb8d4ff, 0.85);
+fill.position.set(-220, 120, 200);
+scene.add(fill);
+
+// Rim light：从后方打轮廓光，cubes 边缘有微微高光，分离前后景
+const rim = new THREE.DirectionalLight(0xfff0d0, 0.55);
+rim.position.set(0, 180, -300);
+scene.add(rim);
+
+// 屏幕几何中心 = 世界原点；+x 右，+y 上，+z 朝用户（屏幕前方）
+// 在屏幕"后方"（-z）摆一些参照立方体，让"窗户内有深度的房间"的感觉成立
+const group = new THREE.Group();
+scene.add(group);
+
+// 房间地板（颜色加亮 + grid，避免在 fog 中消失）
+const matFloor = new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.9 });
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), matFloor);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -PHYS.screenHmm / 2;
+floor.receiveShadow = true;
+group.add(floor);
+
+const floorGrid = new THREE.GridHelper(900, 30, 0x4a5868, 0x2f3a48);
+floorGrid.position.y = -PHYS.screenHmm / 2 + 0.5;
+group.add(floorGrid);
+
+// 后墙拉到更远，让 cubes 有"飘在房间里"的空间
+const matWall = new THREE.MeshStandardMaterial({ color: 0x0d1018, roughness: 1.0 });
+const backWall = new THREE.Mesh(new THREE.PlaneGeometry(900, 700), matWall);
+backWall.position.z = -650;
+backWall.position.y = 50;
+backWall.receiveShadow = true;
+group.add(backWall);
+
+// 后墙参考网格（让深度感更明确）
+const wallGrid = new THREE.GridHelper(900, 18, 0x1f2838, 0x141820);
+wallGrid.rotation.x = Math.PI / 2;
+wallGrid.position.z = -649;
+wallGrid.position.y = 50;
+group.add(wallGrid);
+
+// 不同深度的立方体作为视差参照——拉远到 20~55cm，让 motion parallax 幅度更明显
+const cubes = [];
+const palette = [0x6cf0ff, 0xff6f91, 0xffd166, 0x90ee90, 0xc792ea];
+const SCENE_Y_CENTER = 30;   // 场景重心向上抬 30mm，配合默认俯视视角让画面居中
+for (let i = 0; i < 16; i++) {
+  const size = 30 + Math.random() * 40;          // cube 略放大，远看仍清晰
+  const geo = new THREE.BoxGeometry(size, size, size);
+  const mat = new THREE.MeshStandardMaterial({
+    color: palette[i % palette.length],
+    metalness: 0.1, roughness: 0.55,             // 略粗糙，配合柔和光照
+    emissive: palette[i % palette.length], emissiveIntensity: 0.08,
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  m.position.set(
+    (Math.random() - 0.5) * 380,                  // x: 略放宽
+    SCENE_Y_CENTER + (Math.random() - 0.5) * 150,
+    -200 - Math.random() * 350,                   // z: 屏幕后方 20~55cm（之前是 8~30cm）
+  );
+  m.userData.spin = (Math.random() - 0.5) * 0.004;
+  group.add(m);
+  cubes.push(m);
+}
+
+// "窗框"——两个，一个左屏幕半边、一个右屏幕半边（自由立体的视觉锚）
+const frameMat = new THREE.LineBasicMaterial({ color: 0x6cf });
+const w = PHYS.screenWmm / 2, h = PHYS.screenHmm / 2;   // 屏幕半宽/半高
+const hw = w / 2;                                        // 半屏幕半宽（即屏幕全宽的 1/4）
+
+function makeRectFrame(xMin, xMax, yMin, yMax) {
+  return new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(xMin, yMin, 0),
+      new THREE.Vector3(xMax, yMin, 0),
+      new THREE.Vector3(xMax, yMax, 0),
+      new THREE.Vector3(xMin, yMax, 0),
+    ]),
+    frameMat,
+  );
+}
+// 左屏幕半边 (-w, -h)..(0, h)；右屏幕半边 (0, -h)..(w, h)
+scene.add(makeRectFrame(-w, 0, -h, h));
+scene.add(makeRectFrame(0, w, -h, h));
+
+// ===== 双目相机：左右眼各一个，独立 off-axis frustum =====
+// Gemini 评审 P0：必须关 projectionMatrixAutoUpdate，否则 Three.js 每帧用 fov/aspect 覆盖
+function makeCam() {
+  const c = new THREE.PerspectiveCamera(60, 1, 1, 3000);
+  c.projectionMatrixAutoUpdate = false;
+  c.rotation.set(0, 0, 0);
+  return c;
+}
+const cameraL = makeCam();   // 左眼物理位置
+const cameraR = makeCam();   // 右眼物理位置
+scene.add(cameraL);
+scene.add(cameraR);
+
+/** Off-axis frustum 对着"半屏幕矩形"
+ *  side='left'  → 屏幕左半 (-w,-h)..(0,h)
+ *  side='right' → 屏幕右半 (0,-h)..(w,h)
+ *  eye 是相机物理位置（mm，屏幕系）。
+ *  每只眼睛只"看"屏幕对应一半，配合 setViewport 实现真双目视差。
+ */
+function setOffAxisHalfScreen(camera, eye, side, near, far) {
+  const xMin = (side === 'left') ? -w : 0;
+  const xMax = (side === 'left') ?  0 : w;
+  const n = near;
+  const left   = (xMin - eye.ex) * n / eye.ez;
+  const right  = (xMax - eye.ex) * n / eye.ez;
+  const bottom = (-h    - eye.ey) * n / eye.ez;
+  const top    = ( h    - eye.ey) * n / eye.ez;
+  camera.projectionMatrix.makePerspective(left, right, top, bottom, n, far);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  camera.position.set(eye.ex, eye.ey, eye.ez);
+}
+
+function onResize() {
+  const wPx = window.innerWidth, hPx = window.innerHeight;
+  renderer.setSize(wPx, hPx, false);
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+// ===== MediaPipe Face Landmarker =====
+let landmarker = null;
+async function initLandmarker() {
+  const vision = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+  );
+  landmarker = await FaceLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    outputFaceBlendshapes: false,
+    outputFacialTransformationMatrixes: false,
+  });
+}
+
+// ===== 摄像头 =====
+const video = document.getElementById('cam');
+async function initCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: 640, height: 480, facingMode: 'user' },
+    audio: false,
+  });
+  video.srcObject = stream;
+  await new Promise(r => video.addEventListener('loadeddata', r, { once: true }));
+}
+
+// ===== OneEuro filter 给头位平滑 =====
+class OneEuro {
+  constructor(mincutoff = 1.0, beta = 0.05, dcutoff = 1.0) {
+    this.mincutoff = mincutoff; this.beta = beta; this.dcutoff = dcutoff;
+    this.x_prev = null; this.dx_prev = 0; this.t_prev = 0;
+  }
+  alpha(cutoff, dt) {
+    const tau = 1 / (2 * Math.PI * cutoff);
+    return 1 / (1 + tau / dt);
+  }
+  filter(x, t) {
+    if (this.x_prev === null) { this.x_prev = x; this.t_prev = t; return x; }
+    const dt = Math.max((t - this.t_prev) / 1000, 1e-3);
+    const dx = (x - this.x_prev) / dt;
+    const a_d = this.alpha(this.dcutoff, dt);
+    const dx_hat = a_d * dx + (1 - a_d) * this.dx_prev;
+    const cutoff = this.mincutoff + this.beta * Math.abs(dx_hat);
+    const a = this.alpha(cutoff, dt);
+    const x_hat = a * x + (1 - a) * this.x_prev;
+    this.x_prev = x_hat; this.dx_prev = dx_hat; this.t_prev = t;
+    return x_hat;
+  }
+}
+const fX = new OneEuro(1.0, 0.05);
+const fY = new OneEuro(1.0, 0.05);
+const fZ = new OneEuro(0.6, 0.02);
+
+// ===== 头位估计 =====
+// MediaPipe Face Landmarker 468 点：左瞳 468，右瞳 473（refine_landmarks 才有）；
+// 不依赖 iris 时，用左眼外角 33、右眼外角 263 当近似双瞳水平外缘——但更稳的是用左眼 468/473（在 v0.10 task model 内置）。
+// 这里我们用 left eye center ~ avg(33,133)；right eye center ~ avg(362,263)。
+const LEFT_EYE_OUT = 33, LEFT_EYE_IN = 133;
+const RIGHT_EYE_OUT = 263, RIGHT_EYE_IN = 362;
+
+function estimateHeadFromLandmarks(lm, videoW, videoH) {
+  // landmarks 是归一化 [0,1] 视频坐标，x 已经是镜像后用户视角？——MediaPipe 输出是相对原视频帧的正向坐标，不镜像。
+  const lx = (lm[LEFT_EYE_OUT].x + lm[LEFT_EYE_IN].x) / 2 * videoW;
+  const ly = (lm[LEFT_EYE_OUT].y + lm[LEFT_EYE_IN].y) / 2 * videoH;
+  const rx = (lm[RIGHT_EYE_OUT].x + lm[RIGHT_EYE_IN].x) / 2 * videoW;
+  const ry = (lm[RIGHT_EYE_OUT].y + lm[RIGHT_EYE_IN].y) / 2 * videoH;
+
+  const ipdPx = Math.hypot(rx - lx, ry - ly);
+  // 摄像头水平 FoV
+  const fovH = PHYS.camHFovDeg * Math.PI / 180;
+  // 焦距（像素）：fx = (W/2) / tan(fovH/2)
+  const fx = (videoW / 2) / Math.tan(fovH / 2);
+  // 头到摄像头距离：z_cam = fx * IPD_real / IPD_px
+  const z_cam_mm = fx * PHYS.ipdMm / ipdPx;
+
+  // 双眼中点像素 → 摄像头系 3D（+x 右、+y 上、+z 朝用户）
+  const cx_px = (lx + rx) / 2;
+  const cy_px = (ly + ry) / 2;
+  // 像素中心化（MediaPipe 视频是非镜像；用户左眼在帧右侧；我们要"用户视角"右为 +x，所以 x 取反）
+  const dx_px = cx_px - videoW / 2;
+  const dy_px = cy_px - videoH / 2;
+  const x_cam_mm = -dx_px * z_cam_mm / fx;   // 取反：镜像到用户视角
+  const y_cam_mm = -dy_px * z_cam_mm / fx;   // 像素 y 向下，世界 y 向上
+
+  // 摄像头系 → 屏幕系：屏幕中心是世界原点，摄像头在 (camOffsetX, camOffsetY, 0)
+  const ex = x_cam_mm + PHYS.camOffsetXmm;
+  const ey = y_cam_mm + PHYS.camOffsetYmm;
+  const ez = z_cam_mm;     // 摄像头到屏幕平面 z 偏移忽略（量级在 cm，相对 50cm 工作距离可接受）
+  return { ex, ey, ez, ipdPx };
+}
+
+// ===== 主循环 =====
+let lastVideoTime = -1;
+let fpsAcc = 0, fpsN = 0, fpsT0 = performance.now();
+const hud = {
+  fps: document.getElementById('fps'),
+  head: document.getElementById('head'),
+  dist: document.getElementById('dist'),
+  ipd: document.getElementById('ipd'),
+  face: document.getElementById('face'),
+  vFov: document.getElementById('vFov'),
+  vIpd: document.getElementById('vIpd'),
+  vCamY: document.getElementById('vCamY'),
+  vOffset: document.getElementById('vOffset'),
+  vMode: document.getElementById('vMode'),
+  vScale: document.getElementById('vScale'),
+};
+function refreshCalibHud() {
+  hud.vFov.textContent = PHYS.camHFovDeg.toFixed(0);
+  hud.vIpd.textContent = PHYS.ipdMm.toFixed(0);
+  hud.vCamY.textContent = PHYS.camOffsetYmm.toFixed(0);
+  hud.vOffset.textContent = `${eyeOffset.ex.toFixed(0)}, ${eyeOffset.ey.toFixed(0)}`;
+  hud.vMode.textContent = stereoMode;
+  hud.vScale.textContent = stereoScale.toFixed(1);
+}
+
+// ===== 键盘标定 =====
+const PHYS_DEFAULT = JSON.parse(JSON.stringify(PHYS));
+window.addEventListener('keydown', e => {
+  switch (e.key) {
+    case '[': PHYS.camHFovDeg = Math.max(30, PHYS.camHFovDeg - 1); break;
+    case ']': PHYS.camHFovDeg = Math.min(110, PHYS.camHFovDeg + 1); break;
+    case '-': PHYS.ipdMm = Math.max(50, PHYS.ipdMm - 1); break;
+    case '=': PHYS.ipdMm = Math.min(80, PHYS.ipdMm + 1); break;
+    case ';': PHYS.camOffsetYmm -= 5; break;
+    case "'": PHYS.camOffsetYmm += 5; break;
+    case 'r': case 'R': Object.assign(PHYS, PHYS_DEFAULT); eyeOffset.ex = 0; eyeOffset.ey = 0; stereoMode = 'cross'; stereoScale = 1.0; break;
+    case ' ': recenter(); e.preventDefault(); break;
+    // Stereo 控制
+    case 's': case 'S':
+      stereoMode = stereoMode === 'cross' ? 'parallel' : (stereoMode === 'parallel' ? 'mono' : 'cross');
+      break;
+    case ',': stereoScale = Math.max(0.0, stereoScale - 0.1); break;
+    case '.': stereoScale = Math.min(3.0, stereoScale + 0.1); break;
+    default: return;
+  }
+  refreshCalibHud();
+});
+
+// ===== 零位校准（解决摄像头水平偏置 + 用户坐姿不对称）=====
+// 按 Space 或点击按钮：把当前帧 head 位置记为新零点；之后 eye = rawHead - eyeOffset
+const eyeOffset = { ex: 0, ey: 0 };
+let lastRawHead = null;   // 上一帧未减 offset 的原始头位
+function recenter() {
+  if (lastRawHead) {
+    eyeOffset.ex = lastRawHead.ex;
+    eyeOffset.ey = lastRawHead.ey;
+    // 重置 OneEuro 滤波器内部状态，避免新零位被旧值拖拽
+    fX.x_prev = null; fX.dx_prev = 0;
+    fY.x_prev = null; fY.dx_prev = 0;
+    refreshCalibHud();
+  }
+}
+// 按钮 click 直接绑（DOM 已就绪，type=module 默认 defer）
+document.getElementById('recenterBtn')?.addEventListener('click', recenter);
+
+// ===== 丢失保护 =====
+let lostFrames = 0;
+const LOST_THRESHOLD = 8;
+let lastIpdPx = null;
+const IPD_JUMP_RATIO = 0.5;
+
+// 头部中心（屏幕正前方 50cm 默认）。左右眼位置由 head ± IPD/2 推出。
+let eye = { ex: 0, ey: 0, ez: 500 };
+
+// ===== Stereo 渲染参数 =====
+// 模式：'cross' 斗鸡眼（左眼看右半屏）/ 'parallel' 平行眼（左眼看左半屏）/ 'mono' 单画面（关闭立体）
+let stereoMode = 'cross';
+// 立体强度：1.0 = 真实 IPD；越小立体感越弱，越大越夸张（推荐 0.5~2.0）
+let stereoScale = 1.0;
+
+function renderStereo() {
+  const W = renderer.domElement.width / renderer.getPixelRatio();
+  const H = renderer.domElement.height / renderer.getPixelRatio();
+  const halfW = W / 2;
+
+  const sep = (PHYS.ipdMm * stereoScale) / 2;
+  const leftEye  = { ex: eye.ex - sep, ey: eye.ey, ez: eye.ez };
+  const rightEye = { ex: eye.ex + sep, ey: eye.ey, ez: eye.ez };
+
+  // 各自的 off-axis frustum 对着对应"半屏幕"矩形
+  setOffAxisHalfScreen(cameraL, leftEye,  'left',  50, 3000);
+  setOffAxisHalfScreen(cameraR, rightEye, 'right', 50, 3000);
+
+  renderer.autoClear = false;
+  renderer.clear();
+  renderer.setScissorTest(true);
+
+  if (stereoMode === 'mono') {
+    setOffAxisFullScreen(cameraL, eye, 50, 3000);
+    renderer.setViewport(0, 0, W, H);
+    renderer.setScissor(0, 0, W, H);
+    renderer.render(scene, cameraL);
+    renderer.setScissorTest(false);
+    return;
+  }
+
+  // 屏幕左半 viewport
+  const leftViewportCam  = (stereoMode === 'cross') ? cameraR : cameraL;
+  renderer.setViewport(0, 0, halfW, H);
+  renderer.setScissor(0, 0, halfW, H);
+  renderer.render(scene, leftViewportCam);
+
+  // 屏幕右半 viewport
+  const rightViewportCam = (stereoMode === 'cross') ? cameraL : cameraR;
+  renderer.setViewport(halfW, 0, halfW, H);
+  renderer.setScissor(halfW, 0, halfW, H);
+  renderer.render(scene, rightViewportCam);
+
+  renderer.setScissorTest(false);
+}
+
+// mono fallback 用：单相机看整屏
+function setOffAxisFullScreen(camera, eye, near, far) {
+  const n = near;
+  const left   = (-w - eye.ex) * n / eye.ez;
+  const right  = ( w - eye.ex) * n / eye.ez;
+  const bottom = (-h - eye.ey) * n / eye.ez;
+  const top    = ( h - eye.ey) * n / eye.ez;
+  camera.projectionMatrix.makePerspective(left, right, top, bottom, n, far);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  camera.position.set(eye.ex, eye.ey, eye.ez);
+}
+
+function loop() {
+  const tNow = performance.now();
+  let detected = false;
+  if (landmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const res = landmarker.detectForVideo(video, tNow);
+    if (res.faceLandmarks && res.faceLandmarks.length > 0) {
+      const head = estimateHeadFromLandmarks(
+        res.faceLandmarks[0], video.videoWidth, video.videoHeight,
+      );
+      // IPD 突变保护：转头 / 遮挡 / 误识时丢一帧
+      let accept = true;
+      if (lastIpdPx !== null) {
+        const ratio = Math.abs(head.ipdPx - lastIpdPx) / lastIpdPx;
+        if (ratio > IPD_JUMP_RATIO) accept = false;
+      }
+      if (accept) {
+        lastRawHead = { ex: head.ex, ey: head.ey, ez: head.ez };
+        // 应用零位校准偏移：x/y 减 offset，z 不动（距离是绝对值）
+        eye.ex = fX.filter(head.ex - eyeOffset.ex, tNow);
+        eye.ey = fY.filter(head.ey - eyeOffset.ey, tNow);
+        eye.ez = fZ.filter(head.ez, tNow);
+        lastIpdPx = head.ipdPx;
+        lostFrames = 0;
+        detected = true;
+      } else {
+        lostFrames++;
+      }
+      hud.ipd.textContent = head.ipdPx.toFixed(1);
+    } else {
+      lostFrames++;
+    }
+    // 长时间丢失 → 软重置：让下一次检测重新作为基线，避免冻结画面
+    if (lostFrames > LOST_THRESHOLD * 4) lastIpdPx = null;
+  }
+
+  // 自旋
+  for (const c of cubes) c.rotation.y += c.userData.spin;
+
+  // Gemini 评审 P0：手动 projectionMatrix 后 Three.js frustum culling 会误判 → 边缘物体莫名消失。
+  scene.traverse(o => { if (o.isMesh && o.frustumCulled) o.frustumCulled = false; });
+
+  renderStereo();
+
+  // FPS
+  fpsAcc++;
+  if (tNow - fpsT0 > 500) {
+    const fps = fpsAcc * 1000 / (tNow - fpsT0);
+    hud.fps.textContent = fps.toFixed(0);
+    fpsAcc = 0; fpsT0 = tNow;
+  }
+  hud.head.textContent =
+    `${(eye.ex/10).toFixed(1)}, ${(eye.ey/10).toFixed(1)}, ${(eye.ez/10).toFixed(1)}`;
+  hud.dist.textContent = `${(eye.ez/10).toFixed(1)} cm`;
+  hud.face.textContent = detected ? '✓' : '—';
+
+  requestAnimationFrame(loop);
+}
+
+// ===== Debug 钩子：让 ?debug=1 跳过摄像头，用 eye 默认值直接渲染（cc 离线验证用）=====
+window.__demo = {
+  setEye(ex, ey, ez) { eye.ex = ex; eye.ey = ey; eye.ez = ez; },
+  getEye() { return { ...eye }; },
+  recenter,
+  startNoCam() {
+    document.getElementById('startBtn')?.remove();
+    document.getElementById('hud').hidden = false;
+    refreshCalibHud();
+    loop();
+  },
+  /** 手动渲染一帧（用于 headless preview）*/
+  tick() {
+    scene.traverse(o => { if (o.isMesh && o.frustumCulled) o.frustumCulled = false; });
+    renderStereo();
+    return { sceneChildren: scene.children.length, eye: { ...eye }, stereoMode, stereoScale };
+  },
+  setStereoMode(m) { stereoMode = m; },
+  setStereoScale(s) { stereoScale = s; },
+  /** Debug: 返回每个 cube 的位置 + bounding 投影信息 */
+  inspect() {
+    return {
+      cubes: cubes.map(c => ({
+        pos: [c.position.x.toFixed(0), c.position.y.toFixed(0), c.position.z.toFixed(0)],
+        size: c.geometry.parameters.width,
+      })),
+      camera: {
+        pos: [camera.position.x, camera.position.y, camera.position.z],
+        proj: Array.from(camera.projectionMatrix.elements).map(v => v.toFixed(3)),
+      },
+      rendererSize: [renderer.domElement.width, renderer.domElement.height],
+      pixelRatio: renderer.getPixelRatio(),
+    };
+  },
+  PHYS,
+};
+if (new URLSearchParams(location.search).get('debug') === '1') {
+  window.addEventListener('DOMContentLoaded', () => window.__demo.startNoCam());
+}
+
+// ===== 启动 =====
+const startBtn = document.getElementById('startBtn');
+const errEl = document.getElementById('err');
+startBtn.addEventListener('click', async () => {
+  startBtn.disabled = true;
+  startBtn.textContent = '加载模型中...';
+  try {
+    await initCamera();
+    await initLandmarker();
+    startBtn.remove();
+    document.getElementById('hud').hidden = false;
+    refreshCalibHud();
+    loop();
+  } catch (e) {
+    console.error(e);
+    errEl.textContent = '启动失败: ' + (e.message || e);
+    startBtn.disabled = false;
+    startBtn.textContent = '重试';
+  }
+});
+</script>
+</body>
+</html>
